@@ -1,0 +1,172 @@
+#+title: Quarkus and Service Binding Operator
+#+author: Ioannis Canellos
+#+email: iocanel@redhat.com
+
+* Quarkus and Service Binding Operator
+
+  [[~/Documents/photos/logos/png/quarkus.png]]
+
+** Preparation
+*** Create a kind cluster
+   
+   #+begin_src sh
+   kind create cluster
+   #+end_src
+
+*** Install OLM
+
+   #+begin_src sh
+   curl -sL https://github.com/operator-framework/operator-lifecycle-manager/releases/download/v0.19.1/install.sh | bash -s v0.19.1
+   #+end_src
+
+*** Install SBO
+
+   #+begin_src sh
+   kubectl create -f https://operatorhub.io/install/service-binding-operator.yaml
+   #+end_src
+    
+*** Install the Postgress Operator
+
+   #+begin_src sh 
+   kubectl create -f https://operatorhub.io/install/postgresql.yaml
+   #+end_src
+    
+*** Create a demo namespace
+
+    #+begin_src sh 
+      kubectl create ns demo
+      kubectl config set-context --current --namespace=demo
+    #+end_src
+
+*** Create a postgress cluster
+
+    #+begin_src yaml :tangle ~/pg-cluster.yml
+      apiVersion: postgres-operator.crunchydata.com/v1beta1
+      kind: PostgresCluster
+      metadata:
+        name: postgresql
+        namespace: demo
+      spec:
+        image: registry.developers.crunchydata.com/crunchydata/crunchy-postgres-ha:centos8-13.4-0
+        postgresVersion: 13
+        instances:
+          - name: instance1
+            dataVolumeClaimSpec:
+              accessModes:
+              - "ReadWriteOnce"
+              resources:
+                requests:
+                  storage: 1Gi
+        backups:
+          pgbackrest:
+            image: registry.developers.crunchydata.com/crunchydata/crunchy-pgbackrest:centos8-2.33-2
+            repos:
+            - name: repo1
+              volume:
+                volumeClaimSpec:
+                  accessModes:
+                  - "ReadWriteOnce"
+                  resources:
+                    requests:
+                      storage: 1Gi
+            - name: repo2
+              volume:
+                volumeClaimSpec:
+                  accessModes:
+                  - "ReadWriteOnce"
+                  resources:
+                    requests:
+                      storage: 1Gi
+        proxy:
+          pgBouncer:
+            image: registry.developers.crunchydata.com/crunchydata/crunchy-pgbouncer:centos8-1.15-2
+    #+end_src
+
+    #+begin_src sh
+      kubectl apply -f ~/pg-cluster.yml
+    #+end_src
+
+** Demo Quarkus ServiceBinding generation
+**** Clone the examples
+     #+begin_src sh
+       cd 
+       mkdir -p ~/demo
+       git clone git@github.com:quarkusio/quarkus-quickstarts.git ~/demo/quarkus-quickstarts
+     #+end_src
+
+*** Pick up a postgres example
+    #+begin_src sh
+      cp -r ~/demo/quarkus-quickstarts/hibernate-orm-panache-quickstart ~/demo/hibernate-orm-panache-quickstart
+      cd ~/demo/hibernate-orm-panache-quickstart
+    #+end_src
+
+*** Add kubernetes and service binding extensions
+    #+begin_src sh
+      quarkus ext add -B kubernetes kubernetes-service-binding container-image-docker
+    #+end_src
+
+*** Set the Image Pull Policy
+
+    #+begin_src sh
+    echo "quarkus.kubernetes.image-pull-policy=IfNotPresent" >> src/main/resources/application.properties
+    #+end_src
+
+*** Create the container image 
+
+    #+begin_src sh
+      mvn clean install -Dquarkus.container-image.build=true -DskipTests
+      kind load docker-image iocanel/hibernate-orm-panache-quickstart:1.0.0-SNAPSHOT
+    #+end_src
+
+*** Configure Service Binding
+    #+begin_src sh 
+      cat <<'EOF' >>src/main/resources/application.properties
+      quarkus.kubernetes-service-binding.services.my-db.api-version=postgres-operator.crunchydata.com/v1beta1
+      quarkus.kubernetes-service-binding.services.my-db.kind=PostgresCluster
+      quarkus.kubernetes-service-binding.services.my-db.name=postgresql
+      EOF
+    #+end_src
+
+*** Deploy
+    #+begin_src sh
+      mvn clean install -Dquarkus.kubernetes.deploy=true -DskipTests
+    #+end_src
+    
+*** Verify
+    #+begin_src sh
+      kubectl port-forward service/hibernate-orm-panache-quickstart 8080:80
+    #+end_src
+
+** How we can further improve the experience ?
+
+   [[~/Documents/photos/magic.png]]
+
+** Demo Quarkus Automagic ServiceBinding generation
+
+*** Overview
+    - Preview of Quakus automagic binding
+    - Explain convetions
+    - Talk about customization
+
+*** Check the generated resources
+
+    #+begin_src emacs-lisp
+      (delete-other-windows)
+      (find-file-other-window "~/demo/hibernate-orm-panache-quickstart/target/kubernetes/kubernetes.yml")
+      (shrink-window 75 t)
+    #+end_src 
+
+*** Remove ALL service binding configuration
+
+    #+begin_src sh
+      sed -i '/^quarkus.kubernetes-service-binding/d' src/main/resources/application.properties 
+    #+end_src
+    
+
+*** Rebuild the application
+
+    #+begin_src sh
+      mvn clean install -DskipTests
+    #+end_src
+
+    #+RESULTS:
